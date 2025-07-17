@@ -38,28 +38,20 @@ This application serves as a **conversational weather assistant** for Indian use
 
 ### 1. Clone the Repository
 
-```bash
 git clone https://github.com/yourusername/advanced-weather-predictor.git
 cd advanced-weather-predictor
 
 2. Install Dependencies
-bash
-Copy
-Edit
 pip install -r requirements.txt
+
 3. Set Environment Variables
 Create a .env file in the root directory and add your API keys:
-
-env
-Copy
-Edit
 OPENWEATHER_API_KEY=your_openweathermap_api_key
 GOOGLE_API_KEY=your_gemini_api_key
+
 4. Start the Streamlit App
-bash
-Copy
-Edit
 streamlit run app.py
+
 💬 Example Queries
 You can ask the assistant queries like:
 
@@ -72,9 +64,6 @@ You can ask the assistant queries like:
 "What’s the temperature in Bangalore next month?"
 
 📂 Project Structure
-bash
-Copy
-Edit
 📦 advanced-weather-predictor/
 ├── app.py                        # Main Streamlit app
 ├── patterns/
@@ -82,6 +71,7 @@ Edit
 ├── .env                          # API keys (not committed)
 ├── requirements.txt              # Python dependencies
 └── README.md                     # Project documentation
+
 🌐 Data Sources
 Weather Data: OpenWeatherMap
 

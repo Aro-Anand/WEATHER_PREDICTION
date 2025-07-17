@@ -15,13 +15,13 @@ from prophet import Prophet
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.seasonal import seasonal_decompose
 import warnings
-warnings.filterwarnings('ignore')
 import os
 from dotenv import load_dotenv
 import json
 import re
-from patterns.patterns import REGIONAL_PATTERNS
+from patterns.patterns import regional_patterns
 from geopy.geocoders import Nominatim
+warnings.filterwarnings('ignore')
 
 # Load environment variables
 load_dotenv()
@@ -37,13 +37,17 @@ st.set_page_config(
 )
 
 # Regional weather patterns and characteristics (Extended for all major Indian cities)
-REGIONAL_PATTERNS = REGIONAL_PATTERNS
-
+REGIONAL_PATTERNS = regional_patterns
+def get_api_key(key_name, service_name):
+    key = os.getenv(key_name)
+    if not key:
+        st.warning(f"⚠️ {service_name} API key not found. Please set {key_name} in your .env file.")
+    return key
 class OpenWeatherMapAPI:
     """OpenWeatherMap API integration for real-time weather data"""
     
     def __init__(self):
-        self.api_key = os.getenv('OPENWEATHER_API_KEY')
+        self.api_key = get_api_key('OPENWEATHER_API_KEY', 'OpenWeatherMap')
         self.base_url = "http://api.openweathermap.org/data/2.5"
         self.geocoder = Nominatim(user_agent="weather_app")
     
@@ -65,10 +69,13 @@ class OpenWeatherMapAPI:
     
     def get_current_weather(self, location):
         """Get current weather for a location"""
+        if not self.api_key:
+            return None
+
         lat, lon = self.get_coordinates(location)
         if not lat or not lon:
             return None
-        
+
         url = f"{self.base_url}/weather"
         params = {
             'lat': lat,
@@ -76,12 +83,22 @@ class OpenWeatherMapAPI:
             'appid': self.api_key,
             'units': 'metric'
         }
-        
-        response = requests.get(url, params=params)
-        if response.status_code == 200:
+
+        return self._make_api_request(url, params)
+
+    def _make_api_request(self, url, params):
+        """Make API request with error handling"""
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
             return response.json()
-        return None
-    
+        except requests.exceptions.RequestException as e:
+            st.error(f"API request failed: {e}")
+            return None
+        except Exception as e:
+            st.error(f"Unexpected error: {e}")
+            return None
+
     def get_5day_forecast(self, location):
         """Get 5-day weather forecast for a location"""
         lat, lon = self.get_coordinates(location)
@@ -504,7 +521,17 @@ class AdvancedWeatherPredictor:
                         'pressure': 1013,
                         'wind_speed': 5,
                         'method': 'Regional Pattern Matching'
-                },
+                    }
+                else:
+                    prediction = {
+                        'date': future_date,
+                        'temperature': 25,
+                        'humidity': 60,
+                        'rainfall': 0,
+                        'pressure': 1013,
+                        'wind_speed': 5,
+                        'method': 'Default Values'
+                    }
             
             predictions.append(prediction)
         
@@ -514,47 +541,149 @@ class WeatherChatbot:
     """Conversational weather assistant using Google Gemini"""
     
     def __init__(self):
-        self.gemini_api_key = os.getenv('GOOGLE_API_KEY')
+        self.gemini_api_key = get_api_key('GOOGLE_API_KEY', 'Google Gemini')
         if self.gemini_api_key:
             genai.configure(api_key=self.gemini_api_key)
-            self.model = genai.GenerativeModel('gemini-1.5-flash')
+            self.model = genai.GenerativeModel('gemini-2.0-flash')
         else:
             self.model = None
         
         self.weather_predictor = AdvancedWeatherPredictor()
         self.context = []
+        
+        # Enhanced location mappings for better recognition
+        self.location_aliases = {
+            'bombay': 'Mumbai',
+            'calcutta': 'Kolkata',
+            'madras': 'Chennai',
+            'bangalore': 'Bengaluru',
+            'mysore': 'Mysuru',
+            'poona': 'Pune',
+            'kanpur': 'Kanpur',
+            'allahabad': 'Prayagraj',
+            'baroda': 'Vadodara',
+            'trivandrum': 'Thiruvananthapuram'
+        }
+        
+        # Weather-related keywords for better query understanding
+        self.weather_keywords = {
+            'temperature': ['temp', 'temperature', 'hot', 'cold', 'warm', 'cool', 'degree'],
+            'rain': ['rain', 'rainfall', 'precipitation', 'shower', 'drizzle', 'downpour'],
+            'humidity': ['humidity', 'moisture', 'humid', 'muggy', 'damp'],
+            'wind': ['wind', 'breeze', 'gust', 'windy', 'storm'],
+            'pressure': ['pressure', 'barometric'],
+            'cyclone': ['cyclone', 'hurricane', 'typhoon', 'storm', 'cyclonic'],
+            'flood': ['flood', 'flooding', 'inundation', 'waterlogging'],
+            'drought': ['drought', 'dry', 'arid', 'water shortage'],
+            'monsoon': ['monsoon', 'monsoons', 'rainy season']
+        }
+    
+    def preprocess_query_with_gemini(self, query):
+        """Use Gemini to correct spelling mistakes and extract intent"""
+        if not self.model:
+            return query, self.extract_location_and_timeframe(query)
+        
+        preprocessing_prompt = f"""
+        You are a weather query preprocessor for India. Your task is to:
+        1. Correct any spelling mistakes in the query
+        2. Identify the location (city/state) mentioned
+        3. Identify the time frame requested
+        4. Determine if this is about severe weather (cyclone, flood, drought, etc.)
+        5. Standardize the query for better processing
+        
+        Original query: "{query}"
+        
+        Please respond in this JSON format:
+        {{
+            "corrected_query": "corrected version of the query",
+            "location": "identified location or null",
+            "timeframe_days": number_of_days_or_null,
+            "weather_type": "normal/cyclone/flood/drought/severe",
+            "intent": "current_weather/forecast/historical/severe_weather_info"
+        }}
+        
+        Common Indian city name corrections:
+        - Bombay → Mumbai
+        - Calcutta → Kolkata  
+        - Madras → Chennai
+        - Bangalore → Bengaluru
+        """
+        
+        try:
+            response = self.model.generate_content(preprocessing_prompt)
+            # Extract JSON from response
+            response_text = response.text
+            
+            # Try to extract JSON
+            import json
+            import re
+            
+            # Find JSON in the response
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group()
+                parsed_response = json.loads(json_str)
+                
+                corrected_query = parsed_response.get('corrected_query', query)
+                location = parsed_response.get('location')
+                timeframe = parsed_response.get('timeframe_days', 1)
+                weather_type = parsed_response.get('weather_type', 'normal')
+                intent = parsed_response.get('intent', 'current_weather')
+                
+                # Apply location aliases
+                if location:
+                    location = self.location_aliases.get(location.lower(), location)
+                
+                return corrected_query, (location or 'Delhi', timeframe, weather_type, intent)
+            
+        except Exception as e:
+            st.warning(f"Query preprocessing failed: {e}")
+        
+        # Fallback to original method
+        location, timeframe = self.extract_location_and_timeframe(query)
+        return query, (location, timeframe, 'normal', 'current_weather')
     
     def extract_location_and_timeframe(self, query):
-        """Extract location and timeframe from user query"""
-        
-        # Common Indian locations (states, cities, districts)
-        locations = []
-        timeframes = []
-        
-        # Extract locations from query
+        """Enhanced location and timeframe extraction"""
         query_lower = query.lower()
+        
+        # Extract locations with improved matching
+        locations = []
         
         # Check for states and cities in REGIONAL_PATTERNS
         for location in REGIONAL_PATTERNS.keys():
             if location.lower() in query_lower:
                 locations.append(location)
         
-        # Extract timeframes
+        # Check aliases
+        for alias, real_name in self.location_aliases.items():
+            if alias in query_lower:
+                locations.append(real_name)
+        
+        # Enhanced timeframe extraction
+        timeframes = []
+
+        # More comprehensive time patterns
         time_patterns = {
-            r'next week|1 week|7 days': 7,
-            r'next month|1 month|30 days': 30,
+            r'today': 0,
             r'tomorrow': 1,
             r'day after tomorrow': 2,
-            r'next (\d+) days': None,  # Dynamic extraction
-            r'after (\d+) days': None,  # Dynamic extraction
-            r'(\d+) days': None,       # Dynamic extraction
+            r'next week|1 week|7 days': 7,
+            r'next month|1 month|30 days': 30,
+            r'next (\d+) days?': None,
+            r'after (\d+) days?': None,
+            r'(\d+) days? ahead': None,
+            r'in (\d+) days?': None,
+            r'for (\d+) days?': None,
+            r'this weekend': 2,
+            r'this week': 7,
+            r'next weekend': 9,
         }
         
         for pattern, days in time_patterns.items():
             matches = re.findall(pattern, query_lower)
             if matches:
                 if days is None:
-                    # Extract number from match
                     for match in matches:
                         if isinstance(match, str) and match.isdigit():
                             timeframes.append(int(match))
@@ -566,131 +695,306 @@ class WeatherChatbot:
                     timeframes.append(days)
         
         # Default values
-        if not locations:
-            locations = ['Delhi']  # Default location
-        if not timeframes:
-            timeframes = [1]  # Default to tomorrow
+        location = locations[0] if locations else 'Delhi'
+        timeframe = timeframes[0] if timeframes else 1
         
-        return locations[0], timeframes[0]
+        return location, timeframe
     
-    def get_weather_response(self, query):
-        """Generate comprehensive weather response"""
+    def explain_methodology(self, days_ahead):
+        """Explain the methodology used for predictions"""
+        methodology = "\n### 📚 Methodology\n\n"
         
-        location, days_ahead = self.extract_location_and_timeframe(query)
+        if days_ahead <= 5:
+            methodology += "🌐 **Data Source**: OpenWeatherMap API (Real-time forecasts)\n"
+        else:
+            methodology += "🤖 **Data Source**: AI Models + Historical Patterns\n"
+            methodology += "📊 **Models Used**: Prophet Time Series + Ensemble Methods\n"
         
-        # Get current weather
+        methodology += "🇮🇳 **Regional Adaptation**: Indian weather patterns and seasonal variations\n"
+        methodology += "⚠️ **Disclaimer**: Predictions are estimates. Always check official meteorological sources for critical decisions.\n"
+        
+        return methodology
+
+    def handle_severe_weather_query(self, query, location, weather_type):
+        """Handle queries about cyclones, floods, droughts, etc."""
+        
+        if not self.model:
+            return self.generate_fallback_severe_weather_response(location, weather_type)
+        
+        # Get current weather context
         current_weather = self.weather_predictor.api.get_current_weather(location)
         current_data = self.weather_predictor.api.parse_current_weather(current_weather)
         
-        # Get predictions
-        predictions = self.weather_predictor.predict_extended_weather(location, days_ahead)
+        # Get regional patterns
+        region_key = self.weather_predictor._find_closest_region(location)
+        regional_pattern = REGIONAL_PATTERNS.get(region_key, {})
         
-        # Generate response
-        response = self.generate_detailed_response(query, location, days_ahead, current_data, predictions)
+        severe_weather_prompt = f"""
+        You are a severe weather expert for India. The user is asking about {weather_type} conditions.
+        
+        User Query: {query}
+        Location: {location}
+        Weather Type: {weather_type}
+        
+        Current Weather Data: {current_data}
+        Regional Pattern: {regional_pattern}
+        
+        Please provide a comprehensive response covering:
+        1. Current risk assessment for {weather_type} in {location}
+        2. Seasonal patterns and typical occurrence times
+        3. Historical context and frequency
+        4. Warning signs and preparedness measures
+        5. Current weather conditions that might contribute to {weather_type}
+        6. Safety recommendations and emergency contacts
+        
+        Make the response informative, accurate, and helpful for someone in {location}.
+        """
+        
+        try:
+            response = self.model.generate_content(severe_weather_prompt)
+            return response.text
+        except Exception as e:
+            return self.generate_fallback_severe_weather_response(location, weather_type)
+    
+    def generate_fallback_severe_weather_response(self, location, weather_type):
+        """Fallback response for severe weather queries"""
+        
+        region_key = self.weather_predictor._find_closest_region(location)
+        regional_pattern = REGIONAL_PATTERNS.get(region_key, {})
+        
+        response = f"## {weather_type.title()} Information for {location}\n\n"
+        
+        if weather_type == 'cyclone':
+            response += "🌀 **Cyclone Information:**\n"
+            response += f"• **Peak Season**: {regional_pattern.get('cyclone_season', 'April-June, October-December')}\n"
+            response += "• **Warning Signs**: Sudden pressure drop, increased wind speed, heavy rainfall\n"
+            response += "• **Preparedness**: Stay indoors, stock essential supplies, monitor weather updates\n"
+            response += "• **Emergency**: Contact local disaster management authorities\n\n"
+            
+        elif weather_type == 'flood':
+            response += "🌊 **Flood Information:**\n"
+            response += f"• **Risk Period**: During monsoon season ({regional_pattern.get('monsoon_months', 'June-September')})\n"
+            response += "• **Warning Signs**: Continuous heavy rainfall, river level rise, waterlogging\n"
+            response += "• **Safety**: Move to higher ground, avoid walking/driving through flooded areas\n"
+            response += "• **Emergency**: Contact local flood control authorities\n\n"
+            
+        elif weather_type == 'drought':
+            response += "🏜️ **Drought Information:**\n"
+            response += "• **Risk Period**: Extended dry periods, delayed monsoon\n"
+            response += "• **Indicators**: Low rainfall, high temperatures, water scarcity\n"
+            response += "• **Conservation**: Water rationing, crop management, livestock care\n"
+            response += "• **Support**: Contact agricultural extension services\n\n"
+        
+        response += "⚠️ **Important**: For real-time alerts and official updates, monitor:\n"
+        response += "• India Meteorological Department (IMD)\n"
+        response += "• National Disaster Management Authority (NDMA)\n"
+        response += "• Local disaster management authorities\n"
+        
+        return response
+    
+    def get_weather_response(self, query):
+        """Enhanced weather response with improved query processing"""
+        
+        # Preprocess query with Gemini
+        corrected_query, (location, days_ahead, weather_type, intent) = self.preprocess_query_with_gemini(query)
+        
+        # Handle severe weather queries
+        if weather_type in ['cyclone', 'flood', 'drought', 'severe']:
+            severe_response = self.handle_severe_weather_query(corrected_query, location, weather_type)
+            return severe_response, None, pd.DataFrame()
+        
+        # Get current weather with error handling
+        try:
+            current_weather = self.weather_predictor.api.get_current_weather(location)
+            current_data = self.weather_predictor.api.parse_current_weather(current_weather)
+            
+            if not current_data:
+                # Try alternative location search
+                alternative_location = self.find_alternative_location(location)
+                if alternative_location:
+                    current_weather = self.weather_predictor.api.get_current_weather(alternative_location)
+                    current_data = self.weather_predictor.api.parse_current_weather(current_weather)
+                    location = alternative_location
+                    
+        except Exception as e:
+            st.warning(f"Error fetching current weather: {e}")
+            current_data = None
+        
+        # Get predictions with error handling
+        try:
+            predictions = self.weather_predictor.predict_extended_weather(location, days_ahead)
+        except Exception as e:
+            st.warning(f"Error generating predictions: {e}")
+            predictions = pd.DataFrame()
+        
+        # Generate enhanced response
+        response = self.generate_enhanced_response(corrected_query, location, days_ahead, current_data, predictions, intent)
         
         return response, current_data, predictions
     
-    def generate_detailed_response(self, query, location, days_ahead, current_data, predictions):
-        """Generate detailed weather response using Gemini"""
+    def find_alternative_location(self, location):
+        """Find alternative location if original fails"""
         
-        # Prepare context for Gemini
+        # Check if location is a state, find major city
+        state_cities = {
+            'maharashtra': 'Mumbai',
+            'karnataka': 'Bengaluru',
+            'tamil nadu': 'Chennai',
+            'west bengal': 'Kolkata',
+            'rajasthan': 'Jaipur',
+            'gujarat': 'Ahmedabad',
+            'punjab': 'Chandigarh',
+            'haryana': 'Gurgaon',
+            'uttar pradesh': 'Lucknow',
+            'madhya pradesh': 'Bhopal',
+            'bihar': 'Patna',
+            'odisha': 'Bhubaneswar',
+            'jharkhand': 'Ranchi',
+            'chhattisgarh': 'Raipur',
+            'kerala': 'Kochi',
+            'andhra pradesh': 'Hyderabad',
+            'telangana': 'Hyderabad',
+            'assam': 'Guwahati',
+            'himachal pradesh': 'Shimla',
+            'uttarakhand': 'Dehradun'
+        }
+        
+        location_lower = location.lower()
+        for state, city in state_cities.items():
+            if state in location_lower:
+                return city
+        
+        # If location contains common words, extract city name
+        words = location.split()
+        for word in words:
+            if word in REGIONAL_PATTERNS:
+                return word
+        
+        return None
+    
+    def generate_enhanced_response(self, query, location, days_ahead, current_data, predictions, intent):
+        """Generate enhanced response with better context"""
+        
+        if not self.model:
+            return self.generate_fallback_response(location, days_ahead, current_data, predictions)
+        
+        # Prepare enhanced context
         context = f"""
         User Query: {query}
         Location: {location}
         Forecast Period: {days_ahead} days
+        Query Intent: {intent}
         
         Current Weather Data:
-        {current_data if current_data else "No current data available"}
+        {current_data if current_data else "Current weather data not available"}
         
         Predictions:
-        {predictions.to_dict('records') if not predictions.empty else "No predictions available"}
+        {predictions.to_dict('records') if not predictions.empty else "Predictions not available"}
         
-        Regional Pattern: {REGIONAL_PATTERNS.get(location, 'Unknown')}
+        Regional Pattern: {REGIONAL_PATTERNS.get(location, 'Pattern not found')}
+        
+        Additional Context:
+        - Current date: {datetime.now().strftime('%Y-%m-%d')}
+        - Season: {self.get_current_season()}
         """
         
-        if self.model:
-            # Use Gemini for intelligent response
-            prompt = f"""
-            You are a professional weather forecaster for India. Based on the following weather data and user query, provide a comprehensive, conversational response.
-            
-            {context}
-            
-            Please provide:
-            1. Direct answer to the user's question
-            2. Current weather conditions if available
-            3. Detailed forecast for the requested period
-            4. Regional weather patterns and seasonal considerations
-            5. Any weather advisories or recommendations
-            
-            Make the response conversational and informative, as if you're talking to a friend.
-            """
-            
-            try:
-                response = self.model.generate_content(prompt)
-                return response.text
-            except:
-                pass
+        enhanced_prompt = f"""
+        You are an expert Indian meteorologist providing weather information. Based on the data provided, give a comprehensive and conversational response.
         
-        # Fallback response
-        return self.generate_fallback_response(location, days_ahead, current_data, predictions)
+        {context}
+        
+        Guidelines for response:
+        1. Start with a direct answer to the user's question
+        2. Provide current weather conditions if available
+        3. Give detailed forecast for the requested period
+        4. Include relevant seasonal context and regional patterns
+        5. Add practical advice (clothing, travel, outdoor activities)
+        6. Mention any weather advisories or warnings
+        7. Be conversational and friendly
+        8. Use appropriate weather emojis
+        9. If data is limited, explain the methodology used
+        
+        Format the response in markdown with clear sections.
+        """
+        
+        try:
+            response = self.model.generate_content(enhanced_prompt)
+            return response.text
+        except Exception as e:
+            st.warning(f"Enhanced response generation failed: {e}")
+            return self.generate_fallback_response(location, days_ahead, current_data, predictions)
+    
+    def get_current_season(self):
+        """Determine current season in India"""
+        month = datetime.now().month
+        
+        if month in [12, 1, 2]:
+            return "Winter"
+        elif month in [3, 4, 5]:
+            return "Summer"
+        elif month in [6, 7, 8, 9]:
+            return "Monsoon"
+        else:
+            return "Post-Monsoon"
     
     def generate_fallback_response(self, location, days_ahead, current_data, predictions):
-        """Generate fallback response without Gemini"""
+        """Enhanced fallback response"""
         
-        response = f"## Weather Forecast for {location}\n\n"
+        response = f"## 🌤️ Weather Report for {location}\n\n"
         
-        # Current weather
+        # Current weather with better formatting
         if current_data:
-            response += f"**Current Conditions:**\n"
-            response += f"🌡️ Temperature: {current_data['temperature']:.1f}°C (Feels like {current_data['feels_like']:.1f}°C)\n"
-            response += f"💧 Humidity: {current_data['humidity']}%\n"
-            response += f"🌪️ Wind Speed: {current_data['wind_speed']} m/s\n"
-            response += f"📊 Pressure: {current_data['pressure']} hPa\n"
-            response += f"🌤️ Conditions: {current_data['description'].title()}\n\n"
+            response += f"### 📍 Current Conditions\n"
+            response += f"🌡️ **Temperature**: {current_data['temperature']:.1f}°C (Feels like {current_data['feels_like']:.1f}°C)\n"
+            response += f"💧 **Humidity**: {current_data['humidity']}%\n"
+            response += f"🌪️ **Wind**: {current_data['wind_speed']} m/s\n"
+            response += f"📊 **Pressure**: {current_data['pressure']} hPa\n"
+            response += f"👁️ **Visibility**: {current_data.get('visibility', 'N/A')} km\n"
+            response += f"🌤️ **Conditions**: {current_data['description'].title()}\n\n"
+        else:
+            response += "### ⚠️ Current weather data not available\n\n"
         
-        # Forecast
+        # Enhanced forecast
         if not predictions.empty:
-            response += f"**{days_ahead}-Day Forecast:**\n\n"
+            response += f"### 📅 {days_ahead}-Day Forecast\n\n"
             
-            for i, row in predictions.iterrows():
-                if i < days_ahead:
-                    date = row['date']
-                    if isinstance(date, str):
-                        date = pd.to_datetime(date)
-                    
-                    response += f"📅 **{date.strftime('%B %d, %Y')}**\n"
-                    response += f"   Temperature: {row.get('temperature', 'N/A'):.1f}°C\n"
-                    response += f"   Humidity: {row.get('humidity', 'N/A'):.1f}%\n"
-                    if 'rainfall' in row and row['rainfall'] > 0:
-                        response += f"   🌧️ Rainfall: {row['rainfall']:.1f}mm\n"
-                    response += f"   Wind Speed: {row.get('wind_speed', 'N/A'):.1f} m/s\n\n"
+            for i, row in predictions.head(days_ahead).iterrows():
+                date = row['date']
+                if isinstance(date, str):
+                    date = pd.to_datetime(date)
+                
+                # Determine day name
+                day_name = date.strftime('%A')
+                date_str = date.strftime('%B %d, %Y')
+                
+                response += f"**{day_name}, {date_str}**\n"
+                response += f"   🌡️ Temperature: {row.get('temperature', 'N/A'):.1f}°C\n"
+                response += f"   💧 Humidity: {row.get('humidity', 'N/A'):.1f}%\n"
+                
+                if 'rainfall' in row and row['rainfall'] > 0:
+                    response += f"   🌧️ Rainfall: {row['rainfall']:.1f}mm\n"
+                
+                response += f"   🌪️ Wind: {row.get('wind_speed', 'N/A'):.1f} m/s\n"
+                
+                # Add weather advice
+                temp = row.get('temperature', 25)
+                if temp > 35:
+                    response += f"   ⚠️ **Hot day**: Stay hydrated, avoid outdoor activities\n"
+                elif temp < 15:
+                    response += f"   🧥 **Cool day**: Wear warm clothing\n"
+                
+                if 'rainfall' in row and row['rainfall'] > 10:
+                    response += f"   ☔ **Rainy day**: Carry umbrella, avoid unnecessary travel\n"
+                
+                response += "\n"
+        else:
+            response += "### ⚠️ Extended forecast not available\n"
+            response += "Forecast data could not be generated. Please try again later.\n\n"
         
-        # Add forecasting methodology
+        # Add methodology explanation
         response += self.explain_methodology(days_ahead)
         
         return response
-    
-    def explain_methodology(self, days_ahead):
-        """Explain the forecasting methodology used"""
-        
-        explanation = "\n**Forecasting Methodology:**\n"
-        
-        if days_ahead <= 5:
-            explanation += "🔄 **Real-time API Data**: Using OpenWeatherMap API for 1-5 day forecasts (most accurate)\n"
-        else:
-            explanation += "🤖 **Hybrid Approach** for extended forecasts:\n"
-            explanation += "   • **Prophet Model**: For long-term temperature trends and seasonality\n"
-            explanation += "   • **Ensemble Models**: Random Forest + Gradient Boosting for multi-variable prediction\n"
-            explanation += "   • **Regional Pattern Analysis**: Based on Indian monsoon and seasonal patterns\n"
-            explanation += "   • **Statistical Methods**: Historical data averaging as fallback\n"
-        
-        explanation += "\n**Why this approach?**\n"
-        explanation += "• **API Data (1-5 days)**: Highest accuracy using meteorological models\n"
-        explanation += "• **Prophet Model**: Excellent for capturing seasonal patterns in Indian weather\n"
-        explanation += "• **Ensemble Methods**: Combines multiple algorithms to reduce prediction errors\n"
-        explanation += "• **Regional Patterns**: Incorporates monsoon, cyclone seasons, and local climate variations\n"
-        
-        return explanation
 
 def create_weather_visualizations(current_data, predictions):
     """Create weather visualizations"""
@@ -767,15 +1071,19 @@ def create_weather_visualizations(current_data, predictions):
     return figures
 
 def main():
-    """Main Streamlit application"""
+    """Enhanced main Streamlit application"""
     
     st.title("🌪️ Advanced Weather Prediction System")
     st.subheader("Conversational Weather Assistant for India")
     
-    # Initialize chatbot
-    chatbot = WeatherChatbot()
+    # Initialize chatbot with error handling
+    try:
+        chatbot = WeatherChatbot()
+    except Exception as e:
+        st.error(f"Failed to initialize chatbot: {e}")
+        st.stop()
     
-    # Sidebar for API status
+    # Enhanced sidebar
     with st.sidebar:
         st.header("🔧 System Status")
         
@@ -784,58 +1092,90 @@ def main():
             st.success("✅ OpenWeatherMap API: Connected")
         else:
             st.error("❌ OpenWeatherMap API: Not configured")
+            st.info("Please add OPENWEATHER_API_KEY to your .env file")
         
         if chatbot.model:
             st.success("✅ Gemini AI: Connected")
         else:
-            st.warning("⚠️ Gemini AI: Not configured (using fallback)")
+            st.warning("⚠️ Gemini AI: Not configured")
+            st.info("Please add GOOGLE_API_KEY to your .env file for enhanced features")
         
         st.markdown("---")
         st.header("📍 Popular Locations")
         
-        # Display popular cities
-        popular_cities = list(REGIONAL_PATTERNS.keys())[:10]
-        for city in popular_cities:
-            if st.button(f"📍 {city}", key=f"loc_{city}"):
-                st.session_state.location_query = f"What's the weather in {city}?"
+        # Enhanced location buttons
+        popular_cities = list(REGIONAL_PATTERNS.keys())[:12]
+        cols = st.columns(2)
+        
+        for i, city in enumerate(popular_cities):
+            col = cols[i % 2]
+            with col:
+                if st.button(f"📍 {city}", key=f"loc_{city}"):
+                    st.session_state.location_query = f"What's the weather in {city}?"
+        
+        st.markdown("---")
+        st.header("⚠️ Severe Weather")
+        
+        severe_weather_queries = [
+            "Cyclone risk in Chennai",
+            "Flood alert in Mumbai",
+            "Drought conditions in Rajasthan"
+        ]
+        
+        for query in severe_weather_queries:
+            if st.button(query, key=f"severe_{query}"):
+                st.session_state.location_query = query
     
-    # Main chat interface
+    # Enhanced main interface
     st.header("💬 Ask about Weather")
     
-    # Example queries
+    # Enhanced example queries
     with st.expander("💡 Example Questions"):
         st.markdown("""
+        **🌤️ Regular Weather:**
         - "What's the weather in Mumbai tomorrow?"
         - "Will it rain in Delhi next week?"
-        - "What's the temperature in Bangalore for the next 5 days?"
-        - "Weather forecast for Chennai next month"
-        - "Is it going to be sunny in Kolkata this weekend?"
+        - "Temperature forecast for Bangalore next 5 days"
+        
+        **🌀 Severe Weather:**
+        - "Cyclone risk in Chennai this season"
+        - "Flood conditions in Kerala"
+        - "Drought situation in Karnataka"
+        
+        **🗓️ Time-based:**
+        - "Weather this weekend in Goa"
+        - "Next month's weather in Pune"
+        - "Weather for the next 10 days in Kolkata"
         """)
     
-    # Chat input
+    # Enhanced input handling
     user_query = st.text_input(
         "Ask me about weather anywhere in India:",
-        placeholder="e.g., What's the weather in Mumbai next week?",
+        placeholder="e.g., What's the weather in Mumbai tomorrow? (supports spell correction)",
         value=st.session_state.get('location_query', '')
     )
     
-    # Process query
+    # Clear previous query
+    if 'location_query' in st.session_state:
+        del st.session_state.location_query
+    
+    # Enhanced query processing
     if user_query:
-        with st.spinner("🔍 Analyzing weather patterns..."):
+        with st.spinner("🔍 Analyzing weather patterns and correcting query..."):
             try:
+                # Get response with enhanced processing
                 response, current_data, predictions = chatbot.get_weather_response(user_query)
                 
                 # Display response
                 st.markdown("## 🤖 Weather Assistant Response")
                 st.markdown(response)
                 
-                # Create visualizations
+                # Enhanced visualizations
                 if current_data or not predictions.empty:
-                    st.markdown("## 📊 Weather Visualizations")
+                    st.markdown("## 📊 Interactive Weather Visualizations")
                     
                     figures = create_weather_visualizations(current_data, predictions)
                     
-                    # Display figures in tabs
                     if figures:
                         tab_names = [name for name, _ in figures]
                         tabs = st.tabs(tab_names)
@@ -843,28 +1183,83 @@ def main():
                         for i, (name, fig) in enumerate(figures):
                             with tabs[i]:
                                 st.plotly_chart(fig, use_container_width=True)
-                
-                # Raw data display
-                with st.expander("📋 Raw Forecast Data"):
-                    if not predictions.empty:
-                        st.dataframe(predictions)
                     else:
-                        st.info("No forecast data available")
+                        st.info("Visualization data not available")
+                
+                # Enhanced data display
+                with st.expander("📋 Detailed Forecast Data"):
+                    if not predictions.empty:
+                        # Format the dataframe for better display
+                        display_df = predictions.copy()
+                        if 'date' in display_df.columns:
+                            display_df['date'] = pd.to_datetime(display_df['date']).dt.strftime('%Y-%m-%d')
+                        
+                        # Round numeric columns
+                        numeric_cols = display_df.select_dtypes(include=[np.number]).columns
+                        display_df[numeric_cols] = display_df[numeric_cols].round(2)
+                        
+                        st.dataframe(display_df, use_container_width=True)
+                    else:
+                        st.info("No detailed forecast data available")
+                
+                # Current weather details
+                if current_data:
+                    with st.expander("🌤️ Current Weather Details"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Temperature", f"{current_data['temperature']:.1f}°C", 
+                                     f"Feels like {current_data['feels_like']:.1f}°C")
+                            st.metric("Humidity", f"{current_data['humidity']}%")
+                            st.metric("Wind Speed", f"{current_data['wind_speed']} m/s")
+                        
+                        with col2:
+                            st.metric("Pressure", f"{current_data['pressure']} hPa")
+                            st.metric("Visibility", f"{current_data.get('visibility', 'N/A')} km")
+                            st.write(f"**Description:** {current_data['description'].title()}")
                 
             except Exception as e:
-                st.error(f"Error processing query: {str(e)}")
-                st.info("Please try rephrasing your question or check if the location is spelled correctly.")
+                st.error(f"❌ Error processing query: {str(e)}")
+                st.info("💡 **Troubleshooting tips:**")
+                st.info("- Check if the location name is spelled correctly")
+                st.info("- Try using a major city name instead of a small town")
+                st.info("- Ensure your API keys are properly configured")
+                st.info("- Try rephrasing your question")
     
-    # Footer
+    # Enhanced footer
     st.markdown("---")
     st.markdown("""
-    **🌟 Features:**
-    - Real-time weather data from OpenWeatherMap API
-    - Extended forecasts using AI models (Prophet, Random Forest, Gradient Boosting)
-    - Conversational interface powered by Google Gemini
-    - Comprehensive coverage of Indian locations
-    - Regional pattern analysis for accurate predictions
+    ### 🌟 Advanced Features
+    
+    **🤖 AI-Powered:**
+    - Automatic spelling correction using Google Gemini
+    - Natural language understanding
+    - Contextual weather responses
+    
+    **🌍 Comprehensive Coverage:**
+    - All major Indian cities and states
+    - Regional weather pattern analysis
+    - Seasonal and monsoon considerations
+    
+    **⚡ Multiple Data Sources:**
+    - Real-time data from OpenWeatherMap API
+    - Historical pattern analysis
+    - Advanced ML models for extended forecasts
+    
+    **🚨 Severe Weather Support:**
+    - Cyclone tracking and alerts
+    - Flood risk assessment
+    - Drought condition monitoring
     """)
+    
+    # Add usage statistics
+    if st.button("📊 Show System Info"):
+        st.info(f"""
+        **System Configuration:**
+        - Supported Locations: {len(REGIONAL_PATTERNS)} major cities
+        - API Status: {'✅ Connected' if chatbot.weather_predictor.api.api_key else '❌ Not configured'}
+        - AI Enhancement: {'✅ Enabled' if chatbot.model else '❌ Disabled'}
+        - Current Season: {chatbot.get_current_season()}
+        """)
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,5 @@
-REGIONAL_PATTERNS = {
-    # Major Metropolitan Cities
+regional_patterns = {
+
     'Chennai': {
         'climate_type': 'Tropical wet and dry',
         'monsoon_months': [6, 7, 8, 9, 10, 11],

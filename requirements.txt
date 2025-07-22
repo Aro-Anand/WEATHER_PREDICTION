@@ -6,3 +6,7 @@ tensorboard
 matplotlib
 streamlit
 scikeras
+plotly
+requests
+geopy
+google-generativeai

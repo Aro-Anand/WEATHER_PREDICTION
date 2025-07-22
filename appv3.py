@@ -1,10 +1,22 @@
-import streamlit as st
-import pandas as pd
+#----------------------------------------------------------------------
+# 1. Import Libraries
+#----------------------------------------------------------------------
+import warnings
+import os
+import json
+import re
+import streamlit as st      # Build a simple web app
+## Data Preprocessing
+import pandas as pd 
 import numpy as np
+## Weather API
 import requests
+from geopy.geocoders import Nominatim
 from datetime import datetime, timedelta
+## Data visulization
 import plotly.graph_objects as go
 import plotly.express as px
+## Machine Learning
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -12,23 +24,20 @@ import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Conv1D, MaxPooling1D, Flatten
 from prophet import Prophet
-from statsmodels.tsa.arima.model import ARIMA
-from statsmodels.tsa.seasonal import seasonal_decompose
-import warnings
-import os
-from dotenv import load_dotenv
-import json
-import re
-from patterns.patterns import regional_patterns
-from geopy.geocoders import Nominatim
+# from statsmodels.tsa.arima.model import ARIMA
+# from statsmodels.tsa.seasonal import seasonal_decompose
+## AI integration
+import google.generativeai as genai
+from patterns.patterns import regional_patterns # Fetch regional coordiates
 warnings.filterwarnings('ignore')
 
-# Load environment variables
-load_dotenv()
+#----------------------------------------------------------------------
+# 2. Load Environment
+#----------------------------------------------------------------------
+from dotenv import load_dotenv
+load_dotenv()   ## Load the API keys
 
-# Import Google Generative AI
-import google.generativeai as genai
-
+## Page Configuration:
 st.set_page_config(
     page_title="Advanced Weather Prediction System",
     page_icon="🌪️",
@@ -38,11 +47,17 @@ st.set_page_config(
 
 # Regional weather patterns and characteristics (Extended for all major Indian cities)
 REGIONAL_PATTERNS = regional_patterns
+
+## Check API key Valid or Not
 def get_api_key(key_name, service_name):
     key = os.getenv(key_name)
     if not key:
         st.warning(f"⚠️ {service_name} API key not found. Please set {key_name} in your .env file.")
     return key
+
+#------------------------------------------------------------------------
+# 3. OpenWeatherMapAPI Class -> Handles real-time weather data retrieval. 
+#------------------------------------------------------------------------
 class OpenWeatherMapAPI:
     """OpenWeatherMap API integration for real-time weather data"""
     
@@ -52,7 +67,7 @@ class OpenWeatherMapAPI:
         self.geocoder = Nominatim(user_agent="weather_app")
     
     def get_coordinates(self, location):
-        """Get coordinates for a location using geocoding"""
+        """Get coordinates(latitude, longitude) for a location using geocoding"""
         try:
             # First check if location is in our regional patterns
             for city, data in REGIONAL_PATTERNS.items():
@@ -156,8 +171,11 @@ class OpenWeatherMapAPI:
         
         return pd.DataFrame(forecast_list)
 
+#----------------------------------------------------------------------
+# 4. Advanced Weather Predictor Class -> 
+#----------------------------------------------------------------------
 class AdvancedWeatherPredictor:
-    """Advanced weather prediction with multiple approaches"""
+    """Advanced weather prediction with multiple approaches for extended weather forecasting"""
     
     def __init__(self):
         self.models = {}
@@ -537,6 +555,9 @@ class AdvancedWeatherPredictor:
         
         return predictions
 
+#----------------------------------------------------------------------
+# 5. Weather Chatbot used to communicate with user in natural language.
+#----------------------------------------------------------------------
 class WeatherChatbot:
     """Conversational weather assistant using Google Gemini"""
     

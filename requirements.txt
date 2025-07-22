@@ -1,9 +1,4 @@
-streamlit==1.46.1
-tenacity==9.1.2
-tensorboard==2.19.0
-tensorboard-data-server==0.7.2
-tensorflow==2.19.0
-tensorflow_keras==0.1
+tensorflow
 pandas 
 numpy 
 scikit-learn

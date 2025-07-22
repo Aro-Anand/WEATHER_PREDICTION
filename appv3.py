@@ -20,7 +20,6 @@ import plotly.express as px
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Conv1D, MaxPooling1D, Flatten
 from prophet import Prophet
@@ -34,8 +33,15 @@ warnings.filterwarnings('ignore')
 #----------------------------------------------------------------------
 # 2. Load Environment
 #----------------------------------------------------------------------
-from dotenv import load_dotenv
-load_dotenv()   ## Load the API keys
+# from dotenv import load_dotenv
+# load_dotenv()   ## Load the API keys
+
+## Check API key Valid or Not
+def get_api_key(key_name, service_name):
+    key = st.secrets[key_name]
+    if not key:
+        st.warning(f"⚠️ {service_name} API key not found. Please set {key_name} in your .env file.")
+    return key
 
 ## Page Configuration:
 st.set_page_config(
@@ -47,13 +53,6 @@ st.set_page_config(
 
 # Regional weather patterns and characteristics (Extended for all major Indian cities)
 REGIONAL_PATTERNS = regional_patterns
-
-## Check API key Valid or Not
-def get_api_key(key_name, service_name):
-    key = os.getenv(key_name)
-    if not key:
-        st.warning(f"⚠️ {service_name} API key not found. Please set {key_name} in your .env file.")
-    return key
 
 #------------------------------------------------------------------------
 # 3. OpenWeatherMapAPI Class -> Handles real-time weather data retrieval. 

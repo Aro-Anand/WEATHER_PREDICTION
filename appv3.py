@@ -20,8 +20,8 @@ import plotly.express as px
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Conv1D, MaxPooling1D, Flatten
+from tensorflow.keras.models import Sequential # type: ignore
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Conv1D, MaxPooling1D, Flatten # type: ignore
 from prophet import Prophet
 # from statsmodels.tsa.arima.model import ARIMA
 # from statsmodels.tsa.seasonal import seasonal_decompose
@@ -188,7 +188,7 @@ class AdvancedWeatherPredictor:
         # Find the closest regional pattern
         region_key = self._find_closest_region(location)
         if not region_key:
-            region_key = 'Delhi'  # Default
+            region_key = 'Bangalore'  # Default
         
         pattern = REGIONAL_PATTERNS[region_key]
         
@@ -246,7 +246,7 @@ class AdvancedWeatherPredictor:
                 rainfall = max(0, np.random.exponential(0.8))
             
             data.append({
-                'date': date,
+                'datetime': date,
                 'temperature': temperature,
                 'humidity': humidity,
                 'pressure': pressure,
@@ -305,9 +305,9 @@ class AdvancedWeatherPredictor:
         """Train ensemble of models for weather prediction"""
         
         # Feature engineering
-        df['day_of_year'] = df['date'].dt.dayofyear
-        df['month'] = df['date'].dt.month
-        df['day_of_week'] = df['date'].dt.dayofweek
+        df['day_of_year'] = df['datetime'].dt.dayofyear
+        df['month'] = df['datetime'].dt.month
+        df['day_of_week'] = df['datetime'].dt.dayofweek
         df['temp_lag_1'] = df['temperature'].shift(1)
         df['temp_lag_7'] = df['temperature'].shift(7)
         df['humidity_lag_1'] = df['humidity'].shift(1)
@@ -373,7 +373,7 @@ class AdvancedWeatherPredictor:
         """Train Prophet model for time series forecasting"""
         
         # Prepare data for Prophet
-        prophet_data = df[['date', 'temperature']].rename(columns={'date': 'ds', 'temperature': 'y'})
+        prophet_data = df[['datetime', 'temperature']].rename(columns={'datetime': 'ds', 'temperature': 'y'})
         
         # Create and train model
         model = Prophet(
@@ -392,7 +392,10 @@ class AdvancedWeatherPredictor:
     
     def predict_extended_weather(self, location, days_ahead):
         """Predict weather for extended periods using ensemble approach"""
-        
+
+        if days_ahead is None or not isinstance(days_ahead, (int, float)) or days_ahead < 0:
+            days_ahead = 1 
+        days_ahead = int(days_ahead)
         # Get real-time data for the last few days
         current_weather = self.api.get_current_weather(location)
         forecast_5day = self.api.get_5day_forecast(location)
@@ -403,7 +406,8 @@ class AdvancedWeatherPredictor:
         if days_ahead <= 5:
             if forecast_5day:
                 forecast_df = self.api.parse_forecast(forecast_5day)
-                return forecast_df.head(days_ahead * 8)  # 8 forecasts per day (3-hour intervals)
+                if not forecast_df.empty:
+                    return forecast_df.head(days_ahead * 8)  # 8 forecasts per day (3-hour intervals)
         
         # For longer periods, use trained models
         if location in self.regional_models:
@@ -430,7 +434,7 @@ class AdvancedWeatherPredictor:
                     
                     # Use ensemble models for other variables
                     base_prediction = {
-                        'date': date,
+                        'datetime': date,
                         'temperature': temp_prophet,
                         'humidity': self._predict_humidity(location, date, temp_prophet),
                         'rainfall': self._predict_rainfall(location, date),
@@ -510,13 +514,13 @@ class AdvancedWeatherPredictor:
             
             # Find historical data for similar dates
             similar_dates = synthetic_data[
-                (synthetic_data['date'].dt.month == future_date.month) &
-                (synthetic_data['date'].dt.day == future_date.day)
+                (synthetic_data['datetime'].dt.month == future_date.month) &
+                (synthetic_data['datetime'].dt.day == future_date.day)
             ]
             
             if not similar_dates.empty:
                 prediction = {
-                    'date': future_date,
+                    'datetime': future_date,
                     'temperature': similar_dates['temperature'].mean(),
                     'humidity': similar_dates['humidity'].mean(),
                     'rainfall': similar_dates['rainfall'].mean(),
@@ -531,7 +535,7 @@ class AdvancedWeatherPredictor:
                     pattern = REGIONAL_PATTERNS[region_key]
                     season_data = self._get_seasonal_data(future_date.month, pattern)
                     prediction = {
-                        'date': future_date,
+                        'datetime': future_date,
                         'temperature': season_data['avg_temp'],
                         'humidity': season_data['humidity'],
                         'rainfall': 0,
@@ -541,7 +545,7 @@ class AdvancedWeatherPredictor:
                     }
                 else:
                     prediction = {
-                        'date': future_date,
+                        'datetime': future_date,
                         'temperature': 25,
                         'humidity': 60,
                         'rainfall': 0,
@@ -601,7 +605,10 @@ class WeatherChatbot:
     def preprocess_query_with_gemini(self, query):
         """Use Gemini to correct spelling mistakes and extract intent"""
         if not self.model:
-            return query, self.extract_location_and_timeframe(query)
+            location, timeframe = self.extract_location_and_timeframe(query)
+            if timeframe is None:
+                timeframe = 1
+            return query, (location, timeframe, 'normal', 'current_weather')
         
         preprocessing_prompt = f"""
         You are a weather query preprocessor for India. Your task is to:
@@ -650,17 +657,27 @@ class WeatherChatbot:
                 weather_type = parsed_response.get('weather_type', 'normal')
                 intent = parsed_response.get('intent', 'current_weather')
                 
+                # Validate and fix timeframe
+                if timeframe is None or not isinstance(timeframe, (int, float)) or timeframe < 0:
+                    timeframe = 1
+                else:
+                    timeframe = int(timeframe)   
+
                 # Apply location aliases
                 if location:
                     location = self.location_aliases.get(location.lower(), location)
                 
-                return corrected_query, (location or 'Delhi', timeframe, weather_type, intent)
+                return corrected_query, (location or 'Bangalore', timeframe, weather_type, intent)
             
         except Exception as e:
             st.warning(f"Query preprocessing failed: {e}")
         
         # Fallback to original method
         location, timeframe = self.extract_location_and_timeframe(query)
+
+        # Ensure timeframe is valid
+        if timeframe is None or not isinstance(timeframe, int) or timeframe < 0:
+            timeframe = 1
         return query, (location, timeframe, 'normal', 'current_weather')
     
     def extract_location_and_timeframe(self, query):
@@ -715,7 +732,7 @@ class WeatherChatbot:
                     timeframes.append(days)
         
         # Default values
-        location = locations[0] if locations else 'Delhi'
+        location = locations[0] if locations else 'Bangalore'
         timeframe = timeframes[0] if timeframes else 1
         
         return location, timeframe
@@ -979,7 +996,7 @@ class WeatherChatbot:
             response += f"### 📅 {days_ahead}-Day Forecast\n\n"
             
             for i, row in predictions.head(days_ahead).iterrows():
-                date = row['date']
+                date = row['datetime']
                 if isinstance(date, str):
                     date = pd.to_datetime(date)
                 
@@ -1025,10 +1042,10 @@ def create_weather_visualizations(current_data, predictions):
     if not predictions.empty and 'temperature' in predictions.columns:
         fig_temp = px.line(
             predictions.head(10), 
-            x='date', 
+            x='datetime', 
             y='temperature',
             title='Temperature Forecast',
-            labels={'temperature': 'Temperature (°C)', 'date': 'Date'}
+            labels={'temperature': 'Temperature (°C)', 'datetime': 'Date'}
         )
         fig_temp.update_layout(height=400)
         figures.append(('Temperature Trend', fig_temp))
@@ -1039,7 +1056,7 @@ def create_weather_visualizations(current_data, predictions):
         
         if 'humidity' in predictions.columns:
             fig_multi.add_trace(go.Scatter(
-                x=predictions['date'].head(10),
+                x=predictions['datetime'].head(10),
                 y=predictions['humidity'].head(10),
                 mode='lines+markers',
                 name='Humidity (%)',
@@ -1048,7 +1065,7 @@ def create_weather_visualizations(current_data, predictions):
         
         if 'rainfall' in predictions.columns:
             fig_multi.add_trace(go.Scatter(
-                x=predictions['date'].head(10),
+                x=predictions['datetime'].head(10),
                 y=predictions['rainfall'].head(10),
                 mode='lines+markers',
                 name='Rainfall (mm)',
@@ -1211,8 +1228,8 @@ def main():
                     if not predictions.empty:
                         # Format the dataframe for better display
                         display_df = predictions.copy()
-                        if 'date' in display_df.columns:
-                            display_df['date'] = pd.to_datetime(display_df['date']).dt.strftime('%Y-%m-%d')
+                        if 'datetime' in display_df.columns:
+                            display_df['datetime'] = pd.to_datetime(display_df['datetime']).dt.strftime('%Y-%m-%d')
                         
                         # Round numeric columns
                         numeric_cols = display_df.select_dtypes(include=[np.number]).columns
